@@ -13,7 +13,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
     UV_LINK_MODE=copy \
-    PATH=/opt/ltx-2/.venv/bin:/root/.local/bin:${PATH}
+    PATH=/root/.local/bin:${PATH}
 
 # System deps: ffmpeg for MP4 muxing, git for cloning LTX-2, build-essential
 # for any C extensions that may be compiled by uv sync.
@@ -38,12 +38,15 @@ RUN git clone https://github.com/Lightricks/LTX-2.git /opt/ltx-2 \
 WORKDIR /opt/ltx-2
 
 # Install LTX-2 python deps + xformers extra (Flash-Attention wheels).
+# The RunPod base image ships with UV_SYSTEM_PYTHON=1, so `uv sync` installs
+# directly into the image's system Python (no project venv). We keep that
+# default and layer our serverless deps on top with plain pip.
 # Note: Flash-Attention 3 only accelerates on Hopper (H100/H200). On other GPUs
 # the installed wheels still work but use the attention fallback.
 RUN uv sync --frozen --extra xformers
 
 # Serverless-specific deps (not pulled by LTX-2 itself).
-RUN /opt/ltx-2/.venv/bin/pip install --no-cache-dir \
+RUN python -m pip install --no-cache-dir \
       runpod==1.7.* \
       boto3==1.34.* \
       httpx==0.27.* \
@@ -53,4 +56,4 @@ RUN /opt/ltx-2/.venv/bin/pip install --no-cache-dir \
 COPY handler.py /opt/ltx-2/handler.py
 
 WORKDIR /opt/ltx-2
-CMD ["/opt/ltx-2/.venv/bin/python", "-u", "handler.py"]
+CMD ["python", "-u", "handler.py"]
