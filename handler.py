@@ -60,7 +60,30 @@ from ltx_pipelines.utils.args import ImageConditioningInput  # type: ignore
 # Environment
 # ---------------------------------------------------------------------------
 
-WEIGHTS_ROOT = Path(os.environ.get("LTX_WEIGHTS_ROOT", "/workspace/models"))
+def _resolve_weights_root() -> Path:
+    """Locate the directory holding the LTX-2.3 weights.
+
+    RunPod serverless mounts network volumes at `/runpod-volume` by default,
+    while download pods and the local-test script use `/workspace`. Probe
+    both conventions plus whatever LTX_WEIGHTS_ROOT points at and return the
+    first one that actually has the dev checkpoint. This lets the same image
+    run in either environment without reconfiguration.
+    """
+    marker = "ltx-2.3-22b-dev.safetensors"
+    explicit = os.environ.get("LTX_WEIGHTS_ROOT")
+    candidates: list[Path] = []
+    if explicit:
+        candidates.append(Path(explicit))
+    candidates.extend([Path("/runpod-volume/models"), Path("/workspace/models")])
+    for candidate in candidates:
+        if (candidate / marker).exists():
+            return candidate
+    # Nothing matched — fall through to the first candidate so the caller
+    # surfaces a clear FileNotFoundError with a path the user can inspect.
+    return candidates[0]
+
+
+WEIGHTS_ROOT = _resolve_weights_root()
 DEFAULT_PIPELINE = os.environ.get("LTX_DEFAULT_PIPELINE", "").strip().lower() or None
 SIGNED_URL_TTL = int(os.environ.get("LTX_SIGNED_URL_TTL", "86400"))
 DISTILLED_LORA_STRENGTH = float(os.environ.get("LTX_DISTILLED_LORA_STRENGTH", "0.6"))
