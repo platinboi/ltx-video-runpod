@@ -11,7 +11,7 @@ FROM ${LTX_BASE_IMAGE}
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+    PYTORCH_ALLOC_CONF=expandable_segments:True \
     UV_LINK_MODE=copy \
     PATH=/root/.local/bin:${PATH}
 
