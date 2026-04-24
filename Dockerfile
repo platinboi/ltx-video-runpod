@@ -12,7 +12,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-    UV_SYSTEM_PYTHON=1 \
     UV_LINK_MODE=copy \
     PATH=/opt/ltx-2/.venv/bin:/root/.local/bin:${PATH}
 
