@@ -409,8 +409,8 @@ def _run_pipeline(inp: Input, work: Path) -> tuple[Iterator[torch.Tensor], Any]:
         pipe = get_pipeline("i2v")
         images = [
             ImageConditioningInput(
-                image_path=str(image_path),
-                start_frame=0,
+                path=str(image_path),
+                frame_idx=0,
                 strength=inp.image_strength,
                 crf=40,
             )
@@ -459,8 +459,8 @@ def _run_pipeline(inp: Input, work: Path) -> tuple[Iterator[torch.Tensor], Any]:
     pipe = get_pipeline("distilled")
     images = [
         ImageConditioningInput(
-            image_path=str(image_path),
-            start_frame=0,
+            path=str(image_path),
+            frame_idx=0,
             strength=inp.image_strength,
             crf=40,
         )
