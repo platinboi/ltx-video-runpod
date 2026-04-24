@@ -37,13 +37,18 @@ RUN git clone https://github.com/Lightricks/LTX-2.git /opt/ltx-2 \
 
 WORKDIR /opt/ltx-2
 
-# Install LTX-2 python deps + xformers extra (Flash-Attention wheels).
-# The RunPod base image ships with UV_SYSTEM_PYTHON=1, so `uv sync` installs
-# directly into the image's system Python (no project venv). We keep that
-# default and layer our serverless deps on top with plain pip.
-# Note: Flash-Attention 3 only accelerates on Hopper (H100/H200). On other GPUs
-# the installed wheels still work but use the attention fallback.
-RUN uv sync --frozen --extra xformers
+# Install LTX-2 python deps. The RunPod base image ships with UV_SYSTEM_PYTHON=1,
+# so `uv sync` installs into the image's system Python (no project venv).
+#
+# We deliberately do NOT pull in `--extra xformers`: that bakes Flash-Attention 3
+# wheels which crash with `CUDA error … flash_fwd_launch_template.h:188: invalid
+# argument` on anything that isn't true Hopper sm_90 (Blackwell, Ampere, Ada).
+# EUR-IS-1 has chronic Hopper starvation, so portability matters more than the
+# ~20–30% throughput from FA3. Without the extra, LTX-2 falls back to torch SDPA,
+# which runs cleanly on Hopper, Blackwell RTX PRO 6000, and A100.
+# Re-enable the extra (`uv sync --frozen --extra xformers`) ONLY if you also
+# pin gpuTypeIds to H100/H200 — see STATE.md for the trade-off.
+RUN uv sync --frozen
 
 # Serverless-specific deps go into the same uv-managed env (not system pip).
 RUN uv pip install --no-cache-dir \

@@ -54,6 +54,7 @@ from ltx_pipelines.a2vid_two_stage import A2VidPipelineTwoStage  # type: ignore
 from ltx_pipelines.distilled import DistilledPipeline  # type: ignore
 from ltx_pipelines.ti2vid_two_stages import TI2VidTwoStagesPipeline  # type: ignore
 from ltx_pipelines.utils.args import ImageConditioningInput  # type: ignore
+from ltx_pipelines.utils.types import OffloadMode  # type: ignore
 
 
 # ---------------------------------------------------------------------------
@@ -140,17 +141,35 @@ def _distilled_lora_spec(strength: float) -> list[LoraPathStrengthAndSDOps]:
     ]
 
 
+def _resolve_offload_mode() -> OffloadMode:
+    """Translate `LTX_OFFLOAD_MODE` env (none/cpu/disk) into the enum.
+
+    Default is `cpu`: the 22B FP8 transformer + Gemma-3-12B encoder + activations
+    do not all fit on a 94 GB H100 NVL with `OffloadMode.NONE` (observed
+    OutOfMemoryError at 92 GB allocated). CPU offload streams weights through a
+    small GPU buffer; peak VRAM drops to ~5 GB + activations at the cost of
+    PCIe traffic per layer. On H200 (141 GB) you can safely set this to `none`.
+    """
+    raw = os.environ.get("LTX_OFFLOAD_MODE", "cpu").lower()
+    try:
+        return OffloadMode(raw)
+    except ValueError:
+        return OffloadMode.CPU
+
+
 def get_pipeline(mode: Mode) -> Any:
     cached = _PIPELINES.get(mode)
     if cached is not None:
         return cached
 
     quantization = QuantizationPolicy.fp8_cast()
+    offload_mode = _resolve_offload_mode()
     common = {
         "spatial_upsampler_path": str(SPATIAL_UPSCALER),
         "gemma_root": str(GEMMA_ROOT),
         "loras": [],
         "quantization": quantization,
+        "offload_mode": offload_mode,
     }
 
     if mode == "i2v":
