@@ -4,19 +4,20 @@ Last verified: **2026-04-24**
 
 ## What's deployed
 
-| Resource | ID / Value |
+| Resource | Value |
 |---|---|
-| RunPod endpoint | `v2vdehrn1v3y38` (name: `ltx-video-runpod`) |
-| Template | `t8adh8yldl` |
-| Registry image tag | `registry.runpod.net/platinboi-ltx-video-runpod-main-dockerfile:<sha7>` |
-| Network volume | `bya0i5v4mg` (name: `ltx-weights`, 200 GB, EUR-IS-1) |
-| GPUs (fallback order) | H100 PCIe → H100 SXM → H100 NVL |
+| RunPod endpoint | name: `ltx-video-runpod` (ID stored locally; not in repo) |
+| Template | tag pattern: `registry.runpod.net/<owner>-ltx-video-runpod-main-dockerfile:<sha7>` |
+| Network volume | `ltx-weights`, 200 GB, region EUR-IS-1 |
+| GPUs (current) | true Hopper only — H100 PCIe / SXM / NVL + H200 (forced by FA3 wheel; see GPU constraint section) |
 | Workers (min / max) | 0 / 2 |
 | Idle timeout | 300 s |
-| Execution timeout | 600 s |
+| Execution timeout | 1500 s (25 min) |
 | FlashBoot | on |
 | Scaler | QUEUE_DELAY, value 4 |
 | Region | EUR-IS-1 (forced by volume) |
+
+**Live IDs are NOT in this repo** — see your local `.env.local` or RunPod console for the endpoint, template, and volume IDs.
 
 ## Pinned versions
 
@@ -39,31 +40,18 @@ Bump procedure:
 3. Warm workers keep running the **old** image until bounced. Toggle `workersMax` to 0 then back to 2 via REST API to force reload:
 
 ```bash
-curl -sS -X PATCH "https://rest.runpod.io/v1/endpoints/v2vdehrn1v3y38" \
+curl -sS -X PATCH "https://rest.runpod.io/v1/endpoints/<ENDPOINT_ID>" \
   -H "Authorization: Bearer $RUNPOD_API_KEY" -H "Content-Type: application/json" \
   -d '{"workersMax":0}'
 sleep 8
-curl -sS -X PATCH "https://rest.runpod.io/v1/endpoints/v2vdehrn1v3y38" \
+curl -sS -X PATCH "https://rest.runpod.io/v1/endpoints/<ENDPOINT_ID>" \
   -H "Authorization: Bearer $RUNPOD_API_KEY" -H "Content-Type: application/json" \
   -d '{"workersMax":2}'
 ```
 
 ## Env vars (on the TEMPLATE, not the endpoint)
 
-PATCHing `env` on `/v1/templates/<id>` **replaces** the whole map — always ship the full set:
-
-```
-R2_ACCOUNT_ID
-R2_ACCESS_KEY_ID
-R2_SECRET_ACCESS_KEY
-R2_BUCKET=nanopapaya
-R2_PUBLIC_BASE=https://r2.nanopapaya.io
-LTX_WEIGHTS_ROOT=/runpod-volume/models
-LTX_SIGNED_URL_TTL=86400
-LTX_DISTILLED_LORA_STRENGTH=0.6
-```
-
-> `LTX_WEIGHTS_ROOT` must point at `/runpod-volume/models`, not `/workspace/models`. Template's `volumeMountPath` field is advisory — serverless actually mounts at `/runpod-volume`. `handler._resolve_weights_root()` auto-detects, so either value works, but the env should reflect reality.
+See `.env.example` for the full key list. PATCHing `env` on `/v1/templates/<id>` **replaces** the whole map — always ship the full set, never just the delta. `LTX_WEIGHTS_ROOT` must point at `/runpod-volume/models`, not `/workspace/models`. Template's `volumeMountPath` field is advisory — serverless actually mounts at `/runpod-volume`. `handler._resolve_weights_root()` auto-detects, so either value works, but the env should reflect reality.
 
 ## Upstream LTX-2 traps (live at pinned commit)
 
