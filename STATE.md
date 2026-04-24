@@ -134,7 +134,18 @@ If caching becomes painful, switch to GHA + GHCR with `cache-from: type=gha,mode
 
 - [ ] Verify I/O quality on the distilled mode end-to-end (test pending as of this doc).
 - [ ] `LTX_DEFAULT_PIPELINE` is unset → each mode cold-loads on first call. Consider setting to `i2v` once we know the hot path.
-- [ ] Flash-Attention 3 wheels install via `--extra xformers`; only accelerates on Hopper (H100/H200). If we add A100/L40 fallback GPUs later, confirm the attention fallback works or pin FA to a compatible variant.
+
+## Hard GPU constraint — Hopper only
+
+`uv sync --extra xformers` bakes Flash-Attention 3 wheels that **only run on true Hopper sm_90** (H100 PCIe / SXM / NVL, H200). On anything else — Blackwell RTX PRO 6000, Ampere A100, Ada L40 — kernel launch fails with:
+
+```
+CUDA error (.../flash-attention/hopper/flash_fwd_launch_template.h:188): invalid argument
+```
+
+Worker enters a crash loop: model loads (~2 min), denoising starts, FA3 fires, kernel fails, worker restarts, repeat. The job stays `IN_PROGRESS` indefinitely with `Starting Serverless Worker` repeating in logs. Endpoint `gpuTypeIds` MUST be restricted to H100/H200 only.
+
+**To support broader GPUs in future:** drop `--extra xformers` from the Dockerfile's `uv sync` line and let LTX-2 fall back to torch SDPA. Slower (~20–30%) but portable across Hopper/Blackwell/Ampere.
 
 ## Session history (what already went wrong once)
 
