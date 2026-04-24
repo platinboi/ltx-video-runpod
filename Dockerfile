@@ -1,10 +1,11 @@
 # RunPod serverless image for LTX-2.3 video generation.
 #
-# Base image: the RunPod-maintained PyTorch 2.7 / CUDA 12.8 devel image.
-# If a newer tag is published, bump LTX_BASE_IMAGE and the expected CUDA
-# version documented in README.md. Verify the tag exists on Docker Hub
-# (https://hub.docker.com/r/runpod/pytorch/tags) before building.
-ARG LTX_BASE_IMAGE=runpod/pytorch:2.7.0-py3.12-cuda12.8.0-cudnn-devel-ubuntu22.04
+# Base image: RunPod-maintained PyTorch 2.7.1 / CUDA 12.9 / Ubuntu 22.04.
+# Naming scheme is runpod/pytorch:<img>-cu<cuda>-torch<torch>-ubuntu<ver>.
+# Verify new tags on https://hub.docker.com/r/runpod/pytorch/tags before bumping.
+# The base ships Python 3.11; `uv sync` inside LTX-2 installs the 3.12 toolchain
+# this project requires.
+ARG LTX_BASE_IMAGE=runpod/pytorch:1.0.3-cu1290-torch271-ubuntu2204
 FROM ${LTX_BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive \
