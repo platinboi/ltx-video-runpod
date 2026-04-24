@@ -45,15 +45,29 @@ WORKDIR /opt/ltx-2
 # the installed wheels still work but use the attention fallback.
 RUN uv sync --frozen --extra xformers
 
-# Serverless-specific deps (not pulled by LTX-2 itself).
-RUN python -m pip install --no-cache-dir \
+# Serverless-specific deps go into the same uv-managed env (not system pip).
+RUN uv pip install --no-cache-dir \
       runpod==1.7.* \
       boto3==1.34.* \
       httpx==0.27.* \
       pydantic==2.*
 
+# Fail the build early if any handler import can't resolve — cheaper than
+# discovering the same failure as a crash-looping worker.
+RUN uv run python -c "\
+import runpod, boto3, httpx, pydantic;\
+from ltx_core.quantization import QuantizationPolicy;\
+from ltx_core.loader import LoraPathStrengthAndSDOps, LTXV_LORA_COMFY_RENAMING_MAP;\
+from ltx_core.components.guiders import MultiModalGuiderParams;\
+from ltx_pipelines.utils.args import ImageConditioningInput;\
+from ltx_pipelines.distilled import DistilledPipeline;\
+from ltx_pipelines.ti2vid_two_stages import TI2VidTwoStagesPipeline;\
+from ltx_pipelines.a2vid_two_stage import A2VidPipelineTwoStage;\
+print('import check: OK')"
+
 # Ship the handler.
 COPY handler.py /opt/ltx-2/handler.py
 
 WORKDIR /opt/ltx-2
-CMD ["python", "-u", "handler.py"]
+# Use `uv run` so the handler executes inside the same environment uv sync populated.
+CMD ["uv", "run", "python", "-u", "handler.py"]
