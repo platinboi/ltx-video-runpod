@@ -1,6 +1,6 @@
 # LTX-2.3 RunPod — Deployment State
 
-Last verified: **2026-04-24**
+Last verified: **2026-04-25**
 
 ## What's deployed
 
@@ -102,38 +102,82 @@ RunPod's GitHub builder does **not** persist buildkit layer cache across builds:
 
 - Fresh buildkit container per build (`charming_goldberg`, `quirky_ritchie`, etc — different each time).
 - Base image (~5 GB) re-extracts every build, ~200 s.
-- `uv sync --frozen --extra xformers` re-downloads ~3 GB wheels, ~55 s.
-
-Cold full build: **6–8 min**. Near-warm (same code): **4–5 min**.
+- `uv sync` re-downloads ~3 GB wheels, ~55 s.
+- **Layer + cache export takes 10–20 min** on top of the ~5 min of real work — total ~25–35 min per build.
+- The cache export writes to `/runpod-volume/registry.runpod.net/...` on the same network volume as our weights; **it has aborted mid-write with MooseFS I/O errors** (`error writing layer blob: sync failed: input/output error`). When this happens the template `imageName` does not advance — push an empty/no-op commit to retrigger. Transient; not our problem.
 
 Build steps are ordered for minimal rebuild scope:
 1. `apt-get install` (stable)
 2. `curl uv install`
 3. `git clone LTX-2 @ pinned SHA`
-4. `uv sync --frozen --extra xformers`
+4. `uv sync --frozen` (no xformers extra; see GPU section)
 5. `uv pip install` serverless deps
 6. Build-time smoke test (imports)
 7. `COPY handler.py` (rebuilds on every handler change)
 8. CMD
 
-If caching becomes painful, switch to GHA + GHCR with `cache-from: type=gha,mode=max` — precedent in `runpod-ffmpeg-suite` repo. Currently out of scope (user rejected GHA).
+If build cost becomes painful, switch to GHA + GHCR with `cache-from: type=gha,mode=max` — precedent in `runpod-ffmpeg-suite` repo. Currently out of scope (user rejected GHA).
 
 ## Known issues / TODO
 
-- [ ] Verify I/O quality on the distilled mode end-to-end (test pending as of this doc).
+- [ ] First end-to-end successful generation still pending — H200 + Mode A test in progress at last commit.
 - [ ] `LTX_DEFAULT_PIPELINE` is unset → each mode cold-loads on first call. Consider setting to `i2v` once we know the hot path.
+- [ ] **`handler.get_pipeline()` always passes `quantization=fp8_cast()`.** Combined with `LTX_OFFLOAD_MODE=cpu|disk` this raises `ValueError: quantization is not supported with layer streaming`. Either branch quantization on offload mode, or add a separate `LTX_QUANTIZATION` env. Until done, only `LTX_OFFLOAD_MODE=none` is usable, which forces H200-only.
+- [ ] If H200 stock dries up: implement the Mode B path so we can use Blackwell RTX PRO 6000 (currently abundant) at ~5 GB peak VRAM.
 
-## Hard GPU constraint — Hopper only
+## Memory + GPU + attention — three intertwined constraints
 
-`uv sync --extra xformers` bakes Flash-Attention 3 wheels that **only run on true Hopper sm_90** (H100 PCIe / SXM / NVL, H200). On anything else — Blackwell RTX PRO 6000, Ampere A100, Ada L40 — kernel launch fails with:
+There are three knobs that have to be set consistently. Get any one wrong and you crash, OOM, or queue forever.
+
+### 1. Attention backend — current image uses **torch SDPA** (no xformers extra)
+
+The Dockerfile's `uv sync --frozen` does NOT include `--extra xformers`. The xformers extra bakes Flash-Attention 3 wheels that **only run on true Hopper sm_90** (H100 PCIe / SXM / NVL, H200). On anything else (Blackwell RTX PRO 6000, Ampere A100, Ada L40), FA3 kernel launch fails with:
 
 ```
 CUDA error (.../flash-attention/hopper/flash_fwd_launch_template.h:188): invalid argument
 ```
 
-Worker enters a crash loop: model loads (~2 min), denoising starts, FA3 fires, kernel fails, worker restarts, repeat. The job stays `IN_PROGRESS` indefinitely with `Starting Serverless Worker` repeating in logs. Endpoint `gpuTypeIds` MUST be restricted to H100/H200 only.
+Worker enters a crash loop: model loads (~2 min) → denoising starts → FA3 fires → kernel fails → worker restarts → repeat. Job stays `IN_PROGRESS` indefinitely; logs show `Starting Serverless Worker` repeated every ~2 min.
 
-**To support broader GPUs in future:** drop `--extra xformers` from the Dockerfile's `uv sync` line and let LTX-2 fall back to torch SDPA. Slower (~20–30%) but portable across Hopper/Blackwell/Ampere.
+**Trade:** SDPA is ~20–30% slower per matmul than FA3 but runs on any modern arch. We chose portability over throughput because EUR-IS-1 Hopper stock is unreliable.
+
+To re-enable FA3: add `--extra xformers` back to the `uv sync` line **and** restrict `gpuTypeIds` to H100/H200 only.
+
+### 2. Quantization vs. offload — they are MUTUALLY EXCLUSIVE
+
+`QuantizationPolicy.fp8_cast()` is **incompatible with `OffloadMode.CPU` or `OffloadMode.DISK`**. Combining them fails with:
+
+```
+ValueError: quantization is not supported with layer streaming
+```
+
+You must pick one of these three operating modes:
+
+| Mode | Quantization | Offload | Min VRAM | Speed | Stability |
+|---|---|---|---|---|---|
+| **A. FP8 + NONE** | `QuantizationPolicy.fp8_cast()` | `OffloadMode.NONE` | ~95 GB (94 too tight, see below) | fastest | best on H200 |
+| **B. bf16 + CPU** | `None` | `OffloadMode.CPU` | ~5 GB + activations | medium (PCIe-bound) | works on any 24 GB+ GPU |
+| **C. bf16 + DISK** | `None` | `OffloadMode.DISK` | ~5 GB + activations | slowest (re-reads weights every step) | works on tiny GPUs |
+
+`handler.get_pipeline()` reads `LTX_OFFLOAD_MODE` env (`none|cpu|disk`, default `cpu`). FP8 is currently always applied — when `LTX_OFFLOAD_MODE=cpu/disk`, the handler must be patched to skip the `quantization` argument or you'll hit the `ValueError`.
+
+> **Open TODO:** `handler.get_pipeline()` doesn't yet branch on `LTX_OFFLOAD_MODE` to drop quantization for CPU/DISK modes. Today it sets both, which works only for `none`. Either branch quantization on offload mode, or add an explicit `LTX_QUANTIZATION` env switch.
+
+### 3. VRAM math for Mode A
+
+22B FP8 transformer (~12 GB) + Gemma-3-12B encoder (~24 GB at bf16) + VAE + activations + KV cache = **~92 GB allocated peak observed on H100 NVL (94 GB)**. OOM with 2.88 MiB free trying to allocate 128 MiB inside `fp8_cast.py:_upcast_and_round`.
+
+→ **Mode A does NOT fit reliably on H100 NVL (94 GB).** It needs **H200 (141 GB)** for headroom. H100 SXM/PCIe (80 GB) are way too small for Mode A.
+
+→ For H100/A100/Blackwell (≤96 GB), use Mode B (bf16 + CPU offload) once the handler is patched to skip quantization in offload mode.
+
+### Current operating point
+
+- Image: SDPA (no xformers extra), portable across all archs.
+- `gpuTypeIds`: H200 + H100 family.
+- `LTX_OFFLOAD_MODE=none` (Mode A).
+- `executionTimeoutMs`: 1500 s (25 min).
+- **In practice this means H200 is the only GPU that reliably works.** H100 NVL OOMs on Mode A. H200 has Medium stock (better than H100 NVL Low).
 
 ## Regional GPU starvation
 
@@ -154,11 +198,18 @@ If starvation becomes a chronic problem (multiple test jobs queued >30 min in a 
 
 ## Session history (what already went wrong once)
 
-In order, during the initial bring-up:
+Bring-up issues, in order they were hit:
 1. Fabricated base image tag — real format is `runpod/pytorch:<img>-cu<cuda>-torch<torch>-ubuntu<ver>`.
-2. Assumed `uv sync` creates `.venv` — it doesn't under the base image's env.
+2. Assumed `uv sync` creates `.venv` — it doesn't under the base image's `UV_SYSTEM_PYTHON=1` env.
 3. Missed upstream circular import; smoke test caught it on the second pass.
-4. Assumed `volumeMountPath: /workspace` meant workers mount at `/workspace`; serverless uses `/runpod-volume`.
-5. Used stale `ImageConditioningInput` field names.
+4. Assumed `volumeMountPath: /workspace` meant workers mount at `/workspace`; serverless actually uses `/runpod-volume`.
+5. Used stale `ImageConditioningInput` field names (`image_path`/`start_frame` → upstream renamed to `path`/`frame_idx`).
+6. Built with `--extra xformers` and broadened GPU pool — Blackwell crash-looped on FA3 (`flash_fwd_launch_template.h:188 invalid argument`). Fix: drop xformers extra, fall back to SDPA.
+7. EUR-IS-1 chronic Hopper starvation — jobs sat IN_QUEUE with zero workers, no errors. Fix: pre-allocate Mode B path for non-Hopper, or pay for `workersStandby`.
+8. Mode A (FP8 + `OffloadMode.NONE`) OOMed on H100 NVL (94 GB) at 92 GB allocated. Fix: pin H200 (141 GB) for Mode A, or use Mode B.
+9. Tried Mode A but with `OffloadMode.CPU` to fix OOM → `ValueError: quantization is not supported with layer streaming`. Lesson: FP8 and offload are mutex.
+10. RunPod cache-export to network volume aborted with MooseFS I/O error mid-build — template `imageName` did not advance. Fix: empty-commit retrigger.
+11. PATCHing `env` on a template **replaces** the whole map; partial patches wipe other keys. Always ship the full set.
+12. Endpoint `executionTimeoutMs` defaulted to 600 s and tripped during cold-start FP8 cast. Fix: bump to 1500 s.
 
-Every one of these can regress on an LTX-2 bump or a base-image refresh — keep the build-time smoke test in place.
+Every one of these can regress on an LTX-2 bump, a base-image refresh, or a RunPod policy change. The Dockerfile build-time import smoke test catches #3, #5; the rest live in the operator's head and in this file.
