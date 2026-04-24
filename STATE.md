@@ -147,6 +147,23 @@ Worker enters a crash loop: model loads (~2 min), denoising starts, FA3 fires, k
 
 **To support broader GPUs in future:** drop `--extra xformers` from the Dockerfile's `uv sync` line and let LTX-2 fall back to torch SDPA. Slower (~20–30%) but portable across Hopper/Blackwell/Ampere.
 
+## Regional GPU starvation
+
+EUR-IS-1 (where the volume lives) typically shows **Low** stock for H100 NVL and **no stock** for H100 SXM/PCIe. Globally H100 SXM is "High" but it's in other regions; the region-locked volume can't follow. Symptoms when starved:
+
+- New jobs sit `IN_QUEUE` indefinitely.
+- `/health` shows `workers.throttled > 0` or all worker counters at 0 with `inQueue > 0`.
+- No error — RunPod silently waits for capacity.
+
+**Workarounds, in order of effort:**
+
+1. **Broaden `gpuTypeIds`** to non-Hopper (Blackwell RTX PRO 6000, A100). **Will not work** as long as the image is built with `--extra xformers` because of the FA3 crash documented above. To use this path, also drop the xformers extra and rebuild — accept the SDPA throughput hit.
+2. **Migrate volume to a less-starved region** (e.g. `US-IL-1`, `US-KS-2`). Cost: re-download 117 GB onto a fresh volume, recreate endpoint, ~1 hr of work.
+3. **Buy capacity** — set `workersStandby ≥ 1` to keep one worker warm. Costs while idle, but guarantees instant pickup. Not currently configured (defaults to 0).
+4. **Switch provider** (Modal, Replicate, fal.ai). Last resort; full deploy rewrite. Modal has the best Hopper coverage for this workload pattern but requires re-pinning weights into a Modal Volume.
+
+If starvation becomes a chronic problem (multiple test jobs queued >30 min in a single day), pivot to option 2 or 4. Don't keep retrying — bouncing the endpoint doesn't help since RunPod's allocator is already trying.
+
 ## Session history (what already went wrong once)
 
 In order, during the initial bring-up:
