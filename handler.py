@@ -36,12 +36,19 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 
 # ---------------------------------------------------------------------------
 # LTX-2 imports. These land in the image via `uv sync` inside /opt/ltx-2.
+#
+# UPSTREAM-CONFLICT: ltx_core has a circular import between
+#   loader/__init__ → fuse_loras → quantization/fp8_cast → loader/module_ops
+# that only resolves if `ltx_core.loader` is imported first. Importing
+# `ltx_core.quantization` (or anything that transitively pulls it in) before
+# loader has finished initializing raises an ImportError. Keep `ltx_core.loader`
+# as the very first LTX import below; do not reorder.
 # ---------------------------------------------------------------------------
-from ltx_core.components.guiders import MultiModalGuiderParams  # type: ignore
-from ltx_core.loader import (  # type: ignore
+from ltx_core.loader import (  # type: ignore  # noqa: I001  # import ORDER matters
     LTXV_LORA_COMFY_RENAMING_MAP,
     LoraPathStrengthAndSDOps,
 )
+from ltx_core.components.guiders import MultiModalGuiderParams  # type: ignore
 from ltx_core.quantization import QuantizationPolicy  # type: ignore
 from ltx_pipelines.a2vid_two_stage import A2VidPipelineTwoStage  # type: ignore
 from ltx_pipelines.distilled import DistilledPipeline  # type: ignore

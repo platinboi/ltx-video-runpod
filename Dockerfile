@@ -54,11 +54,14 @@ RUN uv pip install --no-cache-dir \
 
 # Fail the build early if any handler import can't resolve — cheaper than
 # discovering the same failure as a crash-looping worker.
+# NOTE: ltx_core.loader MUST be imported before ltx_core.quantization;
+# upstream has a circular import between the two that only resolves when
+# loader initializes first. Keep the order below in sync with handler.py.
 RUN uv run python -c "\
 import runpod, boto3, httpx, pydantic;\
-from ltx_core.quantization import QuantizationPolicy;\
 from ltx_core.loader import LoraPathStrengthAndSDOps, LTXV_LORA_COMFY_RENAMING_MAP;\
 from ltx_core.components.guiders import MultiModalGuiderParams;\
+from ltx_core.quantization import QuantizationPolicy;\
 from ltx_pipelines.utils.args import ImageConditioningInput;\
 from ltx_pipelines.distilled import DistilledPipeline;\
 from ltx_pipelines.ti2vid_two_stages import TI2VidTwoStagesPipeline;\
